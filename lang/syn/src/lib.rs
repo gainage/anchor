@@ -3,10 +3,16 @@
 #[cfg(feature = "idl")]
 use crate::idl::{IdlAccount, IdlAccountItem, IdlAccounts};
 use anyhow::Result;
+use codegen::accounts as accounts_codegen;
+use codegen::program as program_codegen;
 #[cfg(feature = "idl")]
 use heck::MixedCase;
-use quote::quote;
+use parser::accounts as accounts_parser;
+use parser::program as program_parser;
+use quote::{quote, ToTokens};
 use std::collections::HashMap;
+use syn::parse::{Parse, ParseStream, Result as ParseResult};
+use syn::{ItemMod, ItemStruct};
 
 pub mod codegen;
 #[cfg(feature = "hash")]
@@ -23,6 +29,25 @@ pub struct Program {
     pub ixs: Vec<Ix>,
     pub name: syn::Ident,
     pub program_mod: syn::ItemMod,
+}
+
+impl Parse for Program {
+    fn parse(input: ParseStream) -> ParseResult<Self> {
+        let program_mod = <ItemMod as Parse>::parse(input)?;
+        Ok(program_parser::parse(program_mod))
+    }
+}
+
+impl From<&Program> for proc_macro2::TokenStream {
+    fn from(program: &Program) -> Self {
+        program_codegen::generate(program)
+    }
+}
+
+impl ToTokens for Program {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        tokens.extend::<proc_macro2::TokenStream>(self.into());
+    }
 }
 
 // State struct singleton.
@@ -77,6 +102,25 @@ pub struct AccountsStruct {
     pub fields: Vec<AccountField>,
 }
 
+impl Parse for AccountsStruct {
+    fn parse(input: ParseStream) -> ParseResult<Self> {
+        let strct = <ItemStruct as Parse>::parse(input)?;
+        accounts_parser::parse(&strct)
+    }
+}
+
+impl From<&AccountsStruct> for proc_macro2::TokenStream {
+    fn from(accounts: &AccountsStruct) -> Self {
+        accounts_codegen::generate(accounts)
+    }
+}
+
+impl ToTokens for AccountsStruct {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        tokens.extend::<proc_macro2::TokenStream>(self.into());
+    }
+}
+
 impl AccountsStruct {
     pub fn new(strct: syn::ItemStruct, fields: Vec<AccountField>) -> Self {
         let ident = strct.ident.clone();
@@ -104,7 +148,7 @@ impl AccountsStruct {
                         tys.push(pty.account_ident.to_string());
                     }
                 }
-                AccountField::AccountsStruct(comp_f) => {
+                AccountField::CompositeField(comp_f) => {
                     let accs = global_accs.get(&comp_f.symbol).ok_or_else(|| {
                         anyhow::format_err!("Invalid account type: {}", comp_f.symbol)
                     })?;
@@ -123,7 +167,7 @@ impl AccountsStruct {
         self.fields
             .iter()
             .map(|acc: &AccountField| match acc {
-                AccountField::AccountsStruct(comp_f) => {
+                AccountField::CompositeField(comp_f) => {
                     let accs_strct = global_accs
                         .get(&comp_f.symbol)
                         .expect("Could not reslve Accounts symbol");
@@ -145,13 +189,8 @@ impl AccountsStruct {
 
 #[derive(Debug)]
 pub enum AccountField {
-    // Use a `String` instead of the `AccountsStruct` because all
-    // accounts structs aren't visible to a single derive macro.
-    //
-    // When we need the global context, we fill in the String with the
-    // appropriate values. See, `account_tys` as an example.
-    AccountsStruct(CompositeField), // Composite
-    Field(Field),                   // Primitive
+    Field(Field),
+    CompositeField(CompositeField),
 }
 
 #[derive(Debug)]
