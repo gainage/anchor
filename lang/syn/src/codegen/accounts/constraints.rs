@@ -1,28 +1,74 @@
 use crate::{
-    CompositeField, Constraint, ConstraintAssociated, ConstraintBelongsTo, ConstraintExecutable,
-    ConstraintLiteral, ConstraintOwner, ConstraintRentExempt, ConstraintSeeds, ConstraintSigner,
-    ConstraintState, Field, Ty,
+    CompositeField, Constraint, ConstraintAssociatedGroup, ConstraintBelongsTo,
+    ConstraintExecutable, ConstraintInit, ConstraintLiteral, ConstraintMut, ConstraintOwner,
+    ConstraintRaw, ConstraintRentExempt, ConstraintSeeds, ConstraintSigner, ConstraintState, Field,
+    Ty,
 };
 use quote::quote;
 
-pub fn generate(f: &Field, c: &Constraint) -> proc_macro2::TokenStream {
+pub fn generate(f: &Field) -> proc_macro2::TokenStream {
+    let checks: Vec<proc_macro2::TokenStream> = f
+        .constraints
+        .clone()
+        .to_vec()
+        .iter()
+        .map(|c| generate_constraint(f, c))
+        .collect();
+    quote! {
+        #(#checks)*
+    }
+}
+
+pub fn generate_composite(f: &CompositeField) -> proc_macro2::TokenStream {
+    let checks: Vec<proc_macro2::TokenStream> = f
+        .constraints
+        .clone()
+        .to_vec()
+        .iter()
+        .filter_map(|c| match c {
+            Constraint::Literal(c) => Some(c),
+            _ => panic!("Invariant violation"),
+        })
+        .map(|c| generate_constraint_literal(c))
+        .collect();
+    quote! {
+        #(#checks)*
+    }
+}
+
+fn generate_constraint(f: &Field, c: &Constraint) -> proc_macro2::TokenStream {
     match c {
+        Constraint::Init(c) => generate_constraint_init(f, c),
+        Constraint::Mut(c) => generate_constraint_mut(f, c),
         Constraint::BelongsTo(c) => generate_constraint_belongs_to(f, c),
         Constraint::Signer(c) => generate_constraint_signer(f, c),
         Constraint::Literal(c) => generate_constraint_literal(c),
+        Constraint::Raw(c) => generate_constraint_raw(c),
         Constraint::Owner(c) => generate_constraint_owner(f, c),
         Constraint::RentExempt(c) => generate_constraint_rent_exempt(f, c),
         Constraint::Seeds(c) => generate_constraint_seeds(f, c),
         Constraint::Executable(c) => generate_constraint_executable(f, c),
         Constraint::State(c) => generate_constraint_state(f, c),
-        Constraint::Associated(c) => generate_constraint_associated(f, c),
+        Constraint::AssociatedGroup(c) => generate_constraint_associated(f, c),
+        Constraint::Associated(_)
+        | Constraint::AssociatedPayer(_)
+        | Constraint::AssociatedWith(_)
+        | Constraint::AssociatedSpace(_) => {
+            panic!("Invariant violation: invalid constraint provided")
+        }
     }
 }
 
-pub fn generate_composite(_f: &CompositeField, c: &Constraint) -> proc_macro2::TokenStream {
-    match c {
-        Constraint::Literal(c) => generate_constraint_literal(c),
-        _ => panic!("Composite fields can only use literal constraints"),
+pub fn generate_constraint_init(_f: &Field, _c: &ConstraintInit) -> proc_macro2::TokenStream {
+    quote! {}
+}
+
+pub fn generate_constraint_mut(f: &Field, _c: &ConstraintMut) -> proc_macro2::TokenStream {
+    let name = &f.ident;
+    quote! {
+        if anchor_lang::ToAccountInfo::to_account_info(&#name).is_writable == false {
+            return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(36)); // todo: error codes
+        }
     }
 }
 
@@ -65,10 +111,23 @@ pub fn generate_constraint_signer(f: &Field, _c: &ConstraintSigner) -> proc_macr
 }
 
 pub fn generate_constraint_literal(c: &ConstraintLiteral) -> proc_macro2::TokenStream {
-    let tokens = &c.tokens;
+    let lit: proc_macro2::TokenStream = {
+        let lit = &c.lit;
+        let lit_ts: proc_macro2::TokenStream = quote! {#lit};
+        lit_ts.to_string().replace("\"", "").parse().unwrap()
+    };
     quote! {
-        if !(#tokens) {
+        if !(#lit) {
             return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(1)); // todo: error codes
+        }
+    }
+}
+
+pub fn generate_constraint_raw(c: &ConstraintRaw) -> proc_macro2::TokenStream {
+    let raw = &c.raw;
+    quote! {
+        if !(#raw) {
+            return Err(anchor_lang::solana_program::program_error::ProgramError::Custom(14)); // todo: error codes
         }
     }
 }
@@ -109,7 +168,7 @@ pub fn generate_constraint_seeds(f: &Field, c: &ConstraintSeeds) -> proc_macro2:
     let seeds = &c.seeds;
     quote! {
         let program_signer = Pubkey::create_program_address(
-            &#seeds,
+            &[#seeds],
             program_id,
         ).map_err(|_| anchor_lang::solana_program::program_error::ProgramError::Custom(1))?; // todo
         if #name.to_account_info().key != &program_signer {
@@ -151,7 +210,7 @@ pub fn generate_constraint_state(f: &Field, c: &ConstraintState) -> proc_macro2:
 
 pub fn generate_constraint_associated(
     f: &Field,
-    c: &ConstraintAssociated,
+    c: &ConstraintAssociatedGroup,
 ) -> proc_macro2::TokenStream {
     if c.is_init {
         generate_constraint_associated_init(f, c)
@@ -161,7 +220,7 @@ pub fn generate_constraint_associated(
 }
 pub fn generate_constraint_associated_init(
     f: &Field,
-    c: &ConstraintAssociated,
+    c: &ConstraintAssociatedGroup,
 ) -> proc_macro2::TokenStream {
     let associated_target = c.associated_target.clone();
     let field = &f.ident;
@@ -171,7 +230,7 @@ pub fn generate_constraint_associated_init(
         _ => panic!("Invalid associated constraint"),
     };
 
-    let space = match &f.space {
+    let space = match &c.space {
         // If no explicit space param was given, serialize the type to bytes
         // and take the length (with +8 for the discriminator.)
         None => match is_zero_copy {
@@ -192,7 +251,7 @@ pub fn generate_constraint_associated_init(
         },
     };
 
-    let payer = match &f.payer {
+    let payer = match &c.payer {
         None => quote! {
             let payer = #associated_target.to_account_info();
         },
@@ -203,7 +262,7 @@ pub fn generate_constraint_associated_init(
 
     let associated_pubkey_and_nonce = generate_associated_pubkey(f, c);
 
-    let seeds_with_nonce = match f.associated_seeds.len() {
+    let seeds_with_nonce = match c.associated_seeds.len() {
         0 => quote! {
             [
                 &b"anchor"[..],
@@ -212,7 +271,7 @@ pub fn generate_constraint_associated_init(
             ]
         },
         _ => {
-            let seeds = to_seeds_tts(&f.associated_seeds);
+            let seeds = to_seeds_tts(&c.associated_seeds);
             quote! {
                 [
                     &b"anchor"[..],
@@ -287,7 +346,7 @@ pub fn generate_constraint_associated_init(
 
 pub fn generate_constraint_associated_seeds(
     f: &Field,
-    c: &ConstraintAssociated,
+    c: &ConstraintAssociatedGroup,
 ) -> proc_macro2::TokenStream {
     let generated_associated_pubkey_and_nonce = generate_associated_pubkey(f, c);
     let name = &f.ident;
@@ -300,9 +359,12 @@ pub fn generate_constraint_associated_seeds(
     }
 }
 
-pub fn generate_associated_pubkey(f: &Field, c: &ConstraintAssociated) -> proc_macro2::TokenStream {
+pub fn generate_associated_pubkey(
+    _f: &Field,
+    c: &ConstraintAssociatedGroup,
+) -> proc_macro2::TokenStream {
     let associated_target = c.associated_target.clone();
-    let seeds_no_nonce = match f.associated_seeds.len() {
+    let seeds_no_nonce = match c.associated_seeds.len() {
         0 => quote! {
             [
                 &b"anchor"[..],
@@ -310,7 +372,7 @@ pub fn generate_associated_pubkey(f: &Field, c: &ConstraintAssociated) -> proc_m
             ]
         },
         _ => {
-            let seeds = to_seeds_tts(&f.associated_seeds);
+            let seeds = to_seeds_tts(&c.associated_seeds);
             quote! {
                 [
                     &b"anchor"[..],

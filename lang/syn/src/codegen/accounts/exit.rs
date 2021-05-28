@@ -19,7 +19,7 @@ pub fn generate(accs: &AccountsStruct) -> proc_macro2::TokenStream {
             }
             AccountField::Field(f) => {
                 let ident = &f.ident;
-                match f.is_mut {
+                match f.constraints.mutable.is_some() {
                     false => quote! {},
                     true => quote! {
                         anchor_lang::AccountsExit::exit(&self.#ident, program_id)?;

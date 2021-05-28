@@ -345,7 +345,7 @@ fn parse_account_derives(f: &syn::File) -> HashMap<String, AccountsStruct> {
             syn::Item::Struct(i_strct) => {
                 for attr in &i_strct.attrs {
                     if attr.tokens.to_string().contains(DERIVE_NAME) {
-                        let strct = accounts::parse(i_strct);
+                        let strct = accounts::parse(i_strct).expect("Code not parseable");
                         return Some((strct.ident.to_string(), strct));
                     }
                 }

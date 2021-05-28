@@ -51,11 +51,11 @@ pub fn generate(accs: &AccountsStruct) -> proc_macro2::TokenStream {
                 }
             }
             AccountField::Field(f) => {
-                let is_signer = match f.is_signer {
+                let is_signer = match f.constraints.signer.is_some() {
                     false => quote! {false},
                     true => quote! {true},
                 };
-                let meta = match f.is_mut {
+                let meta = match f.constraints.mutable.is_some() {
                     false => quote! { anchor_lang::solana_program::instruction::AccountMeta::new_readonly },
                     true => quote! { anchor_lang::solana_program::instruction::AccountMeta::new },
                 };

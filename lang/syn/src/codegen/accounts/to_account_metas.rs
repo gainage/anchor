@@ -14,7 +14,7 @@ pub fn generate(accs: &AccountsStruct) -> proc_macro2::TokenStream {
             let (name, is_signer) = match f {
                 AccountField::CompositeField(s) => (&s.ident, quote! {None}),
                 AccountField::Field(f) => {
-                    let is_signer = match f.is_signer {
+                    let is_signer = match f.constraints.signer.is_some() {
                         false => quote! {None},
                         true => quote! {Some(true)},
                     };

@@ -1,5 +1,5 @@
 use crate::codegen::accounts::{constraints, generics};
-use crate::{AccountField, AccountsStruct, Constraint, Field};
+use crate::{AccountField, AccountsStruct, Field};
 use quote::quote;
 
 // Generates the `Accounts` trait implementation.
@@ -41,7 +41,7 @@ pub fn generate(accs: &AccountsStruct) -> proc_macro2::TokenStream {
                         }
                     } else {
                         let name = &f.typed_ident();
-                        match f.is_init {
+                        match f.constraints.init.is_some() {
                             false => quote! {
                                 #[cfg(feature = "anchor-debug")]
                                 ::solana_program::log::sol_log(stringify!(#name));
@@ -71,39 +71,15 @@ pub fn generate(accs: &AccountsStruct) -> proc_macro2::TokenStream {
                 true => Some(f),
             },
         })
-        .map(|field: &Field| {
-            // TODO: the constraints should be sorted so that the associated
-            //       constraint comes first.
-            let checks = field
-                .constraints
-                .iter()
-                .map(|c| constraints::generate(&field, c))
-                .collect::<Vec<proc_macro2::TokenStream>>();
-            quote! {
-                #(#checks)*
-            }
-        })
+        .map(|field: &Field| constraints::generate(field))
         .collect();
 
     // Constraint checks for each account fields.
     let access_checks: Vec<proc_macro2::TokenStream> = non_associated_fields
         .iter()
-        .map(|af: &&AccountField| {
-            let checks: Vec<proc_macro2::TokenStream> = match af {
-                AccountField::Field(f) => f
-                    .constraints
-                    .iter()
-                    .map(|c| constraints::generate(&f, c))
-                    .collect(),
-                AccountField::CompositeField(s) => s
-                    .constraints
-                    .iter()
-                    .map(|c| constraints::generate_composite(&s, c))
-                    .collect(),
-            };
-            quote! {
-                #(#checks)*
-            }
+        .map(|af: &&AccountField| match af {
+            AccountField::Field(f) => constraints::generate(f),
+            AccountField::CompositeField(s) => constraints::generate_composite(s),
         })
         .collect();
 
@@ -154,12 +130,9 @@ fn is_associated_init(af: &AccountField) -> bool {
         AccountField::CompositeField(_s) => false,
         AccountField::Field(f) => f
             .constraints
-            .iter()
-            .filter(|c| match c {
-                Constraint::Associated(c) => c.is_init,
-                _ => false,
-            })
-            .next()
-            .is_some(),
+            .associated
+            .as_ref()
+            .map(|f| f.is_init)
+            .unwrap_or(false),
     }
 }

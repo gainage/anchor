@@ -1,10 +1,13 @@
 use crate::{
-    AccountField, AccountsStruct, CompositeField, CpiAccountTy, CpiStateTy, Field, LoaderTy,
-    ProgramAccountTy, ProgramStateTy, SysvarTy, Ty,
+    AccountField, AccountsStruct, CompositeField, Constraint, ConstraintGroup, CpiAccountTy,
+    CpiStateTy, Field, LoaderTy, ProgramAccountTy, ProgramStateTy, SysvarTy, Ty,
 };
+use constraint::ConstraintGroupBuilder;
 use syn::parse::{Error as ParseError, Result as ParseResult};
+use syn::punctuated::Punctuated;
+use syn::token::Comma;
 
-mod constraints;
+pub mod constraint;
 
 pub fn parse(strct: &syn::ItemStruct) -> ParseResult<AccountsStruct> {
     let fields = match &strct.fields {
@@ -24,13 +27,9 @@ pub fn parse(strct: &syn::ItemStruct) -> ParseResult<AccountsStruct> {
 }
 
 pub fn parse_account_field(f: &syn::Field) -> ParseResult<AccountField> {
-    let anchor_attr = parse_account_attr(f);
+    let constraints = parse_constraints(f)?;
+
     let ident = f.ident.clone().unwrap();
-    let (constraints, is_mut, is_signer, is_init, payer, space, associated_seeds) =
-        match anchor_attr {
-            None => (vec![], false, false, false, None, None, Vec::new()),
-            Some(anchor) => constraints::parse(anchor),
-        };
     let account_field = match is_field_primitive(f) {
         true => {
             let ty = parse_ty(f);
@@ -38,12 +37,6 @@ pub fn parse_account_field(f: &syn::Field) -> ParseResult<AccountField> {
                 ident,
                 ty,
                 constraints,
-                is_mut,
-                is_signer,
-                is_init,
-                payer,
-                space,
-                associated_seeds,
             })
         }
         false => AccountField::CompositeField(CompositeField {
@@ -56,25 +49,20 @@ pub fn parse_account_field(f: &syn::Field) -> ParseResult<AccountField> {
     Ok(account_field)
 }
 
-fn parse_account_attr(f: &syn::Field) -> Option<&syn::Attribute> {
-    let anchor_attrs: Vec<&syn::Attribute> = f
-        .attrs
-        .iter()
-        .filter(|attr| {
-            if attr.path.segments.len() != 1 {
-                return false;
-            }
-            if attr.path.segments[0].ident != "account" {
-                return false;
-            }
-            true
-        })
-        .collect();
-    match anchor_attrs.len() {
-        0 => None,
-        1 => Some(anchor_attrs[0]),
-        _ => panic!("Invalid syntax: please specify one account attribute."),
+pub fn parse_constraints(f: &syn::Field) -> ParseResult<ConstraintGroup> {
+    let mut constraints = ConstraintGroupBuilder::default();
+    for attr in f.attrs.iter().filter(is_account) {
+        for c in attr.parse_args_with(Punctuated::<Constraint, Comma>::parse_terminated)? {
+            constraints.add(c)?;
+        }
     }
+    constraints.build()
+}
+
+pub fn is_account(attr: &&syn::Attribute) -> bool {
+    attr.path
+        .get_ident()
+        .map_or(false, |ident| ident == "account")
 }
 
 fn is_field_primitive(f: &syn::Field) -> bool {
