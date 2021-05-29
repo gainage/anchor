@@ -85,7 +85,8 @@ export type IdlType =
   | "publicKey"
   | IdlTypeVec
   | IdlTypeOption
-  | IdlTypeDefined;
+  | IdlTypeDefined
+  | IdlTypeArray;
 
 export type IdlTypeVec = {
   vec: IdlType;
@@ -98,6 +99,11 @@ export type IdlTypeOption = {
 // User defined type.
 export type IdlTypeDefined = {
   defined: string;
+};
+
+// BRADFORD Arrary type
+export type IdlTypeArray = {
+  array: IdlType;
 };
 
 export type IdlEnumVariant = {
